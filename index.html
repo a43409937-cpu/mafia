@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>اتاق گفتگوی صوتی و بازی مافیا</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    body { font-family: Tahoma, sans-serif; background: #121212; color: #fff; margin: 0; padding: 15px; text-align: center; }
+    .card { background: #1e1e1e; border-radius: 12px; padding: 15px; max-width: 450px; margin: 10px auto; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+    input, button { padding: 12px; margin: 6px; border-radius: 8px; border: none; font-size: 14px; box-sizing: border-box; }
+    input { width: 80%; background: #2a2a2a; color: #fff; text-align: center; }
+    button { background: #e50914; color: white; font-weight: bold; cursor: pointer; }
+    .btn-green { background: #28a745; }
+    .btn-blue { background: #007bff; }
+    .hidden { display: none; }
+    .player-list { text-align: right; margin: 15px 0; }
+    .player-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #333; }
+    .chat-box { height: 150px; overflow-y: auto; background: #181818; border-radius: 8px; padding: 10px; text-align: right; font-size: 13px; margin: 10px 0; }
+    .chat-msg { margin-bottom: 5px; }
+    .mic-status { font-size: 14px; }
+  </style>
+</head>
+<body>
+
+  <h1>🎙️ اتاق گفتگوی صوتی مافیا</h1>
+
+  <!-- کارت ورود -->
+  <div id="auth-card" class="card">
+    <h3>ورود به ویس‌روم</h3>
+    <input type="text" id="player-name" placeholder="نام شما">
+    <br>
+    <button onclick="createRoom()" class="btn-green">ایجاد اتاق جدید 🎙️</button>
+    <hr style="border-color:#333; margin:15px 0;">
+    <input type="text" id="room-code" placeholder="کد اتاق (مثلاً A1B2C)">
+    <br>
+    <button onclick="joinRoom()" class="btn-blue">ورود به اتاق 🚪</button>
+  </div>
+
+  <!-- داخل اتاق -->
+  <div id="room-card" class="card hidden">
+    <h3>کد اتاق شما: <span id="display-room-code" style="color:#ffc107;"></span></h3>
+    
+    <!-- دکمه کنترل میکروفون -->
+    <div style="margin: 15px 0;">
+      <button id="mic-btn" onclick="toggleMic()" class="btn-green" style="font-size: 16px; width: 80%;">
+        🎙️ میکروفون روشن است
+      </button>
+    </div>
+
+    <h4>بازیکنان حاضر (<span id="player-count">0</span>):</h4>
+    <div id="player-list" class="player-list"></div>
+
+    <hr style="border-color:#333;">
+
+    <!-- چت متنی -->
+    <h4>💬 چت متنی</h4>
+    <div id="chat-box" class="chat-box"></div>
+    <div style="display: flex; justify-content: center;">
+      <input type="text" id="chat-input" placeholder="پیام بنویسید..." style="width: 70%; margin: 0;">
+      <button onclick="sendMessage()" class="btn-blue" style="margin: 0 5px;">ارسال</button>
+    </div>
+  </div>
+
+  <!-- تگ‌های صوت مخفی -->
+  <div id="audio-container"></div>
+
+  <script>
+    const socket = io();
+    let peer = null;
+    let myPeerId = null;
+    let localStream = null;
+    let currentRoom = null;
+    let isMuted = false;
+    const peers = {};
+
+    function initPeer() {
+      return new Promise((resolve) => {
+        peer = new Peer();
+        peer.on('open', (id) => {
+          myPeerId = id;
+          resolve(id);
+        });
+
+        // دریافت تماس صوتی از بقیه افراد
+        peer.on('call', (call) => {
+          call.answer(localStream);
+          call.on('stream', (remoteStream) => {
+            addAudioStream(call.peer, remoteStream);
+          });
+        });
+      });
+    }
+
+    async function getMicrophone() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (err) {
+        alert('برای صحبت کردن باید اجازه دسترسی به میکروفون را بدهید.');
+      }
+    }
+
+    async function createRoom() {
+      const name = document.getElementById('player-name').value.trim();
+      if (!name) return alert('لطفاً نام خود را وارد کنید');
+      
+      await getMicrophone();
+      await initPeer();
+
+      socket.emit('create_room', { playerName: name, peerId: myPeerId });
+    }
+
+    async function joinRoom() {
+      const name = document.getElementById('player-name').value.trim();
+      const room = document.getElementById('room-code').value.trim().toUpperCase();
+      if (!name || !room) return alert('نام و کد اتاق را وارد کنید');
+
+      await getMicrophone();
+      await initPeer();
+
+      socket.emit('join_room', { roomId: room, playerName: name, peerId: myPeerId });
+    }
+
+    socket.on('room_created', ({ roomId, players }) => {
+      currentRoom = roomId;
+      enterRoomUI(roomId, players);
+    });
+
+    socket.on('update_players', (players) => {
+      renderPlayers(players);
+    });
+
+    socket.on('user_joined_voice', ({ peerId, playerName }) => {
+      if (localStream && peerId !== myPeerId) {
+        const call = peer.call(peerId, localStream);
+        call.on('stream', (remoteStream) => {
+          addAudioStream(peerId, remoteStream);
+        });
+        peers[peerId] = call;
+      }
+    });
+
+    socket.on('user_left_voice', ({ peerId }) => {
+      removeAudioStream(peerId);
+    });
+
+    socket.on('error_msg', (msg) => alert(msg));
+
+    function enterRoomUI(roomId, players) {
+      document.getElementById('auth-card').classList.add('hidden');
+      document.getElementById('room-card').classList.remove('hidden');
+      document.getElementById('display-room-code').innerText = roomId;
+      renderPlayers(players);
+    }
+
+    function renderPlayers(players) {
+      document.getElementById('player-count').innerText = players.length;
+      const list = document.getElementById('player-list');
+      list.innerHTML = '';
+      players.forEach(p => {
+        list.innerHTML += `
+          <div class="player-item">
+            <span>👤 <b>${p.name}</b> ${p.id === socket.id ? '(شما)' : ''}</span>
+            <span class="mic-status">${p.isMuted ? '🔇 قطع' : '🎙️ وصل'}</span>
+          </div>
+        `;
+      });
+    }
+
+    function addAudioStream(peerId, stream) {
+      let audio = document.getElementById(`audio-${peerId}`);
+      if (!audio) {
+        audio = document.createElement('audio');
+        audio.id = `audio-${peerId}`;
+        audio.autoplay = true;
+        document.getElementById('audio-container').appendChild(audio);
+      }
+      audio.srcObject = stream;
+    }
+
+    function removeAudioStream(peerId) {
+      const audio = document.getElementById(`audio-${peerId}`);
+      if (audio) audio.remove();
+    }
+
+    function toggleMic() {
+      if (!localStream) return;
+      isMuted = !isMuted;
+      localStream.getAudioTracks()[0].enabled = !isMuted;
+      
+      const btn = document.getElementById('mic-btn');
+      if (isMuted) {
+        btn.innerText = '🔇 میکروفون خاموش است';
+        btn.style.background = '#dc3545';
+      } else {
+        btn.innerText = '🎙️ میکروفون روشن است';
+        btn.style.background = '#28a745';
+      }
+
+      socket.emit('toggle_mute', { roomId: currentRoom, isMuted });
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('chat-input');
+      const text = input.value.trim();
+      if (!text || !currentRoom) return;
+      socket.emit('send_message', { roomId: currentRoom, message: text });
+      input.value = '';
+    }
+
+    socket.on('new_message', ({ sender, text }) => {
+      const chatBox = document.getElementById('chat-box');
+      chatBox.innerHTML += `<div class="chat-msg"><b>${sender}:</b> ${text}</div>`;
+      chatBox.scrollTop = chatBox.scrollHeight;
+    });
+  </script>
+</body>
+</html>
