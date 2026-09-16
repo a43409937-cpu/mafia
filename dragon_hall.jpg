@@ -1,0 +1,23 @@
+const socket = io('https://your-render-app.onrender.com');
+
+// 1. درخواست ساخت اتاق
+socket.emit('create_dragon_room', {
+  playerName: 'داریوش',
+  roomTitle: 'تالار اژدها - بازی مافیا',
+  maxPlayers: 10,
+  bgImage: 'https://your-domain.com/assets/33221.jpg' // آدرس این تصویر
+});
+
+// 2. دریافت نتیجه ساخت اتاق
+socket.on('room_created', (data) => {
+  console.log('اتاق ساخته شد:', data.roomId);
+  console.log('تصویر پس‌زمینه اتاق:', data.roomData.theme.bgImage);
+  
+  // می‌تونی پس‌زمینه صفحه‌ت رو ست کنی:
+  document.body.style.backgroundImage = `url('${data.roomData.theme.bgImage}')`;
+});
+
+// 3. دریافت آپدیت‌های اتاق (ورود/خروج بقیه)
+socket.on('room_updated', (data) => {
+  console.log('لیست جدید بازیکنان:', data.roomData.players);
+});
